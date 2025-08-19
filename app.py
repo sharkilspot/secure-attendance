@@ -7,10 +7,11 @@ from fastapi import FastAPI, HTTPException, Query, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
 import gspread
 from oauth2client.service_account import ServiceAccountCredentials
+from dotenv import load_dotenv
 
-# ----------------------
-# FastAPI app
-# ----------------------
+# Load .env file if running locally
+load_dotenv()
+
 app = FastAPI()
 
 # ----------------------
@@ -52,7 +53,8 @@ creds_dict = {
 creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, SCOPE)
 client = gspread.authorize(creds)
 
-SPREADSHEET_ID = "1Xu3iwUKsgwP3pr5ObtRb6cUQEYjJdkxUgeyGw-wYSv4"
+# Open by spreadsheet ID
+SPREADSHEET_ID = get_env_var("SPREADSHEET_ID")  # Set your sheet ID in .env
 sheet = client.open_by_key(SPREADSHEET_ID).sheet1
 
 # ----------------------
@@ -62,7 +64,7 @@ tokens = {}
 TOKEN_TTL = 30  # seconds
 
 # ----------------------
-# Async Google Sheets write
+# Background async append
 # ----------------------
 async def append_row_async(row):
     try:
@@ -85,11 +87,7 @@ def generate_token():
     return {"token": token, "expires_in": TOKEN_TTL}
 
 @app.get("/validate/{token}")
-async def validate_token(
-    token: str,
-    background_tasks: BackgroundTasks,
-    student_id: str = Query(...)
-):
+async def validate_token(token: str, student_id: str = Query(...), background_tasks: BackgroundTasks = None):
     expiry = tokens.get(token)
     if not expiry:
         raise HTTPException(status_code=400, detail="Invalid or already used token")
@@ -101,7 +99,11 @@ async def validate_token(
     del tokens[token]
     timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
-    # Schedule background write
-    background_tasks.add_task(append_row_async, [student_id, timestamp, "Present"])
+    # Schedule background task
+    if background_tasks:
+        background_tasks.add_task(append_row_async, [student_id, timestamp, "Present"])
+    else:
+        # fallback synchronous append if no BackgroundTasks
+        await append_row_async([student_id, timestamp, "Present"])
 
     return {"status": "success", "message": f"Attendance recorded for {student_id}"}
