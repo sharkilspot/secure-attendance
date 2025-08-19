@@ -31,7 +31,7 @@ app.add_middleware(
 )
 
 # ---------- Token & Session ----------
-TOKEN_TTL_SECONDS = int(os.getenv("TOKEN_TTL_SECONDS", "5"))
+TOKEN_TTL_SECONDS = int(os.getenv("TOKEN_TTL_SECONDS", "10"))
 TOKENS: Dict[str, Tuple[float, str]] = {}  # token -> (expires_at, session_id)
 CURRENT_SESSION_ID = uuid.uuid4().hex  # new session on server start
 
@@ -222,3 +222,4 @@ def test_sheet():
         return {"title": ws.title, "rows_head": ws.row_values(1)}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
