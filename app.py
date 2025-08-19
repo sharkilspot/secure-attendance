@@ -10,8 +10,14 @@ async def append_row_async(row):
     except Exception as e:
         print("Google Sheets append error:", e)
 
+from fastapi import BackgroundTasks, Query
+
 @app.get("/validate/{token}")
-async def validate_token(token: str, student_id: str = Query(...), background_tasks: BackgroundTasks):
+async def validate_token(
+    token: str,
+    background_tasks: BackgroundTasks,
+    student_id: str = Query(...)
+):
     expiry = tokens.get(token)
     if not expiry:
         raise HTTPException(status_code=400, detail="Invalid or already used token")
@@ -23,7 +29,7 @@ async def validate_token(token: str, student_id: str = Query(...), background_ta
     del tokens[token]
     timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
-    # Schedule background task to append to Google Sheets
+    # Background write
     background_tasks.add_task(append_row_async, [student_id, timestamp, "Present"])
 
     return {"status": "success", "message": f"Attendance recorded for {student_id}"}
