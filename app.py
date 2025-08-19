@@ -25,18 +25,24 @@ app.add_middleware(
 # ----------------------
 SCOPE = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
 
+def get_env_var(name: str) -> str:
+    value = os.getenv(name)
+    if not value:
+        raise RuntimeError(f"Environment variable {name} is not set!")
+    return value
+
 creds_dict = {
-    "type": os.getenv("GS_TYPE"),
-    "project_id": os.getenv("GS_PROJECT_ID"),
-    "private_key_id": os.getenv("GS_PRIVATE_KEY_ID"),
-    "private_key": os.getenv("GS_PRIVATE_KEY").replace("\\n", "\n"),
-    "client_email": os.getenv("GS_CLIENT_EMAIL"),
-    "client_id": os.getenv("GS_CLIENT_ID"),
-    "auth_uri": os.getenv("GS_AUTH_URI"),
-    "token_uri": os.getenv("GS_TOKEN_URI"),
-    "auth_provider_x509_cert_url": os.getenv("GS_AUTH_PROVIDER_CERT_URL"),
-    "client_x509_cert_url": os.getenv("GS_CLIENT_CERT_URL"),
-    "universe_domain": os.getenv("GS_UNIVERSE_DOMAIN"),
+    "type": get_env_var("GS_TYPE"),
+    "project_id": get_env_var("GS_PROJECT_ID"),
+    "private_key_id": get_env_var("GS_PRIVATE_KEY_ID"),
+    "private_key": get_env_var("GS_PRIVATE_KEY").replace("\\n", "\n"),
+    "client_email": get_env_var("GS_CLIENT_EMAIL"),
+    "client_id": get_env_var("GS_CLIENT_ID"),
+    "auth_uri": get_env_var("GS_AUTH_URI"),
+    "token_uri": get_env_var("GS_TOKEN_URI"),
+    "auth_provider_x509_cert_url": get_env_var("GS_AUTH_PROVIDER_CERT_URL"),
+    "client_x509_cert_url": get_env_var("GS_CLIENT_CERT_URL"),
+    "universe_domain": get_env_var("GS_UNIVERSE_DOMAIN"),
 }
 
 creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, SCOPE)
@@ -44,7 +50,7 @@ client = gspread.authorize(creds)
 
 # Open by spreadsheet ID
 SPREADSHEET_ID = "1Xu3iwUKsgwP3pr5ObtRb6cUQEYjJdkxUgeyGw-wYSv4"
-sheet = client.open_by_key(SPREADSHEET_ID).sheet1  # first sheet (AttendanceLog)
+sheet = client.open_by_key(SPREADSHEET_ID).sheet1
 
 # ----------------------
 # Token system
@@ -73,11 +79,7 @@ def validate_token(token: str, student_id: str = Query(...)):
         del tokens[token]
         raise HTTPException(status_code=400, detail="Token expired")
 
-    # One-time use
     del tokens[token]
-
-    # Append to Google Sheet
     timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     sheet.append_row([student_id, timestamp, "Present"])
-
     return {"status": "success", "message": f"Attendance recorded for {student_id}"}
