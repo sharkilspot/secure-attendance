@@ -1,4 +1,4 @@
 fastapi
 uvicorn[standard]
 gspread
-oauth2client  # needed if you use gspread with service account credentials
+oauth2client
