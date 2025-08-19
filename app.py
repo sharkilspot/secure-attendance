@@ -1,39 +1,46 @@
-# app.py (additions/replacements)
+# app.py
 import os
+import json
 import time
-import secrets
 import uuid
-from typing import Dict, List, Tuple
+import secrets
+from typing import Dict, Tuple, List
 
 from fastapi import FastAPI, HTTPException, Request, Form
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.responses import HTMLResponse
 
 import gspread
 from oauth2client.service_account import ServiceAccountCredentials
 
 app = FastAPI(title="Secure Attendance API")
 
-# ---------- CORS (as you already fixed) ----------
+# ----------------------------
+# CORS
+# ----------------------------
 def _env_list(name: str) -> List[str]:
     val = os.getenv(name, "").strip()
     return [x.strip() for x in val.split(",") if x.strip()] if val else []
 
 EXTRA_ORIGINS = _env_list("FRONTEND_ORIGINS")
 ALLOW_ORIGINS = ["https://sfc.vuejs.org", "https://play.vuejs.org", *EXTRA_ORIGINS]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=ALLOW_ORIGINS,
-    allow_origin_regex=r"^https://([a-z0-9-]+\.)*vuejs\.org$",
+    allow_origins=ALLOW_ORIGINS,                               # explicit list
+    allow_origin_regex=r"^https://([a-z0-9-]+\.)*vuejs\.org$", # any subdomain of vuejs.org
     allow_methods=["*"],
     allow_headers=["*"],
-    allow_credentials=False,
+    allow_credentials=False,  # no cookies needed; simpler CORS
 )
 
-# ---------- Token & Session ----------
-TOKEN_TTL_SECONDS = int(os.getenv("TOKEN_TTL_SECONDS", "10"))
+# ----------------------------
+# Config & token store
+# ----------------------------
+TOKEN_TTL_SECONDS = int(os.getenv("TOKEN_TTL_SECONDS", "10"))  # default 10s
+SPREADSHEET_ID = os.getenv("SPREADSHEET_ID")  # must be set
 TOKENS: Dict[str, Tuple[float, str]] = {}  # token -> (expires_at, session_id)
-CURRENT_SESSION_ID = uuid.uuid4().hex  # new session on server start
+CURRENT_SESSION_ID = uuid.uuid4().hex      # new session on server start
 
 def _now() -> float:
     return time.time()
@@ -44,27 +51,14 @@ def _clean_expired():
         if exp < now:
             TOKENS.pop(t, None)
 
-# ---------- Google Sheets ----------
-def get_env_var(name: str) -> str:
-    v = os.getenv(name)
-    if not v:
-        raise RuntimeError(f"Environment variable {name} is not set!")
-    return v
-
+# ----------------------------
+# Google Sheets helpers
+# ----------------------------
 def get_gsheet_client():
-    creds_dict = {
-        "type": get_env_var("GS_TYPE"),
-        "project_id": get_env_var("GS_PROJECT_ID"),
-        "private_key_id": get_env_var("GS_PRIVATE_KEY_ID"),
-        "private_key": get_env_var("GS_PRIVATE_KEY").replace("\\n", "\n"),
-        "client_email": get_env_var("GS_CLIENT_EMAIL"),
-        "client_id": get_env_var("GS_CLIENT_ID"),
-        "auth_uri": get_env_var("GS_AUTH_URI"),
-        "token_uri": get_env_var("GS_TOKEN_URI"),
-        "auth_provider_x509_cert_url": get_env_var("GS_AUTH_PROVIDER_CERT_URL"),
-        "client_x509_cert_url": get_env_var("GS_CLIENT_CERT_URL"),
-        "universe_domain": get_env_var("GS_UNIVERSE_DOMAIN"),
-    }
+    raw = os.getenv("GS_CREDENTIALS_JSON")
+    if not raw:
+        raise RuntimeError("GS_CREDENTIALS_JSON is not set!")
+    creds_dict = json.loads(raw)
     scope = [
         "https://spreadsheets.google.com/feeds",
         "https://www.googleapis.com/auth/drive",
@@ -73,15 +67,14 @@ def get_gsheet_client():
     return gspread.authorize(creds)
 
 def get_attendance_sheet():
+    if not SPREADSHEET_ID:
+        raise RuntimeError("SPREADSHEET_ID is not set!")
     client = get_gsheet_client()
-    spreadsheet_id = get_env_var("SPREADSHEET_ID")
-    ss = client.open_by_key(spreadsheet_id)
-
-    # Use (or create) a worksheet named "Attendance"
+    ss = client.open_by_key(SPREADSHEET_ID)
     try:
         ws = ss.worksheet("Attendance")
     except gspread.exceptions.WorksheetNotFound:
-        ws = ss.add_worksheet(title="Attendance", rows=1000, cols=12)
+        ws = ss.add_worksheet(title="Attendance", rows=2000, cols=12)
         ws.append_row([
             "timestamp_epoch", "timestamp_iso", "session_id",
             "token_tail", "student_id", "status", "client_ip", "user_agent"
@@ -93,26 +86,21 @@ def append_attendance_row(session_id: str, token: str, student_id: str, request:
     ts = int(_now())
     from datetime import datetime, timezone
     iso = datetime.fromtimestamp(ts, tz=timezone.utc).isoformat()
-
-    token_tail = token[-6:]  # short audit trail
+    token_tail = token[-6:]
     client_ip = (request.client.host if request.client else "") or ""
     user_agent = request.headers.get("user-agent", "")
+    ws.append_row([ts, iso, session_id, token_tail, student_id.strip(), "OK", client_ip, user_agent])
 
-    ws.append_row([
-        ts, iso, session_id, token_tail, student_id.strip(), "OK", client_ip, user_agent
-    ])
-
-# ---------- Routes ----------
+# ----------------------------
+# Routes
+# ----------------------------
 @app.get("/healthz")
 def healthz():
     return {"ok": True, "ttl": TOKEN_TTL_SECONDS, "session_id": CURRENT_SESSION_ID}
 
 @app.post("/session/start")
 def start_session():
-    """
-    Teacher triggers a new attendance session (optional).
-    If you call this from the Vue page once per class, you'll get a fresh session_id.
-    """
+    """Teacher starts a fresh attendance session."""
     global CURRENT_SESSION_ID
     CURRENT_SESSION_ID = uuid.uuid4().hex
     return {"session_id": CURRENT_SESSION_ID}
@@ -124,8 +112,8 @@ def home():
 @app.get("/generate")
 def generate():
     """
-    Issue a short-lived token for current session.
-    Frontend encodes it in a URL that opens /scan/{token}.
+    Issue a short-lived, one-time token for the current session.
+    Frontend encodes it into /scan/{token}.
     """
     _clean_expired()
     token = secrets.token_urlsafe(24)
@@ -136,24 +124,22 @@ def generate():
 @app.get("/scan/{token}", response_class=HTMLResponse)
 def scan_page(token: str):
     """
-    Student lands here after scanning the QR.
-    Renders a tiny HTML form (no CORS needed since it's same-origin).
+    Student lands here after scanning the QR. Simple HTML form posts to /check-in.
     """
     _clean_expired()
     info = TOKENS.get(token)
     if not info:
-        return HTMLResponse(
-            content="<h2>Token invalid or expired.</h2>",
-            status_code=401
-        )
-    # Minimal HTML form
+        return HTMLResponse("<h2>Token invalid or expired.</h2>", status_code=401)
+
+    expires_at, session_id = info
+    seconds_left = max(0, int(expires_at - _now()))
     html = f"""
     <!doctype html>
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>Attendance Check-In</title>
     <style>
       body {{ font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif; padding: 2rem; }}
-      .card {{ max-width: 480px; margin: 0 auto; padding: 1.25rem; border: 1px solid #e5e7eb; border-radius: .75rem; }}
+      .card {{ max-width: 520px; margin: 0 auto; padding: 1.25rem; border: 1px solid #e5e7eb; border-radius: .75rem; }}
       label {{ display:block; margin-bottom: .5rem; font-weight: 600; }}
       input, button {{ width: 100%; padding: .75rem; margin-top: .25rem; }}
       button {{ background: #2563eb; color: white; border: 0; border-radius: .5rem; cursor: pointer; }}
@@ -167,16 +153,16 @@ def scan_page(token: str):
           <input name="student_id" required placeholder="e.g. 2103xxxx">
         </label>
         <button type="submit">Check In</button>
-        <p class="muted">Session: {info[1][:8]}… · Token expires when submitted or in {int(info[0]-_now())}s</p>
+        <p class="muted">Session: {session_id[:8]}… · Token expires in ~{seconds_left}s</p>
       </form>
     </div>
     """
-    return HTMLResponse(content=html)
+    return HTMLResponse(content=html, status_code=200)
 
 @app.post("/check-in")
 async def check_in(request: Request, token: str = Form(...), student_id: str = Form(...)):
     """
-    Validate the token and record attendance. Token is consumed (one-time).
+    Validate token, log attendance to Google Sheets, and consume the token (one-time).
     """
     _clean_expired()
     info = TOKENS.get(token)
@@ -188,22 +174,21 @@ async def check_in(request: Request, token: str = Form(...), student_id: str = F
         TOKENS.pop(token, None)
         raise HTTPException(status_code=401, detail="Token expired")
 
-    # Consume token first (prevent double submit)
+    # Consume token first to prevent double submission
     TOKENS.pop(token, None)
 
     try:
         append_attendance_row(session_id=session_id, token=token, student_id=student_id, request=request)
     except Exception as e:
-        # You can choose to fail or still confirm; here we surface the error
-        raise HTTPException(status_code=500, detail=f"Logged-in failed: {e}")
+        # Surface error (e.g., bad credentials, missing permissions)
+        raise HTTPException(status_code=500, detail=f"Logging failed: {e}")
 
-    # Success page
     return HTMLResponse(
         content=f"<h2>Check-in successful for {student_id} ✅</h2><p>Session {session_id[:8]}…</p>",
         status_code=200
     )
 
-# (keep your /validate/{token} and /test-sheet if you still need them)
+# Optional: keep /validate if you still want a JSON validator endpoint
 @app.get("/validate/{token}")
 def validate(token: str, consume: bool = True):
     _clean_expired()
@@ -215,11 +200,11 @@ def validate(token: str, consume: bool = True):
         TOKENS.pop(token, None)
     return {"status": "success", "session_id": session_id, "token": token, "expires_at": int(expires_at)}
 
+# Diagnostics: quick check that Sheets is reachable and tab exists
 @app.get("/test-sheet")
 def test_sheet():
     try:
         ws = get_attendance_sheet()
-        return {"title": ws.title, "rows_head": ws.row_values(1)}
+        return {"title": ws.title, "header": ws.row_values(1)}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
-
