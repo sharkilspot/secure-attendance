@@ -1,72 +1,61 @@
-from fastapi import FastAPI
-from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
-import secrets, time, os
+# app.py
+from fastapi import FastAPI, HTTPException
+import os
 import gspread
 from oauth2client.service_account import ServiceAccountCredentials
 
-app = FastAPI()
+app = FastAPI(title="Secure Attendance API")
 
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_methods=["*"],
-    allow_headers=["*"]
-)
+# ----------------------------
+# ENV helper
+# ----------------------------
+def get_env_var(name: str) -> str:
+    value = os.getenv(name)
+    if not value:
+        raise RuntimeError(f"Environment variable {name} is not set!")
+    return value
 
-# ---- Token Management ----
-tokens = {}
-TOKEN_EXPIRY = 30  # seconds
-
-# ---- Google Sheets Setup ----
-def init_gsheet():
+# ----------------------------
+# Google Sheets client
+# ----------------------------
+def get_gsheet_client():
     creds_dict = {
-        "type": os.environ["GS_TYPE"],
-        "project_id": os.environ["GS_PROJECT_ID"],
-        "private_key_id": os.environ["GS_PRIVATE_KEY_ID"],
-        "private_key": os.environ["GS_PRIVATE_KEY"].replace("\\n", "\n"),
-        "client_email": os.environ["GS_CLIENT_EMAIL"],
-        "client_id": os.environ["GS_CLIENT_ID"],
-        "auth_uri": os.environ["GS_AUTH_URI"],
-        "token_uri": os.environ["GS_TOKEN_URI"],
-        "auth_provider_x509_cert_url": os.environ["GS_AUTH_PROVIDER_CERT_URL"],
-        "client_x509_cert_url": os.environ["GS_CLIENT_CERT_URL"],
-        "universe_domain": os.environ["GS_UNIVERSE_DOMAIN"]
+        "type": get_env_var("GS_TYPE"),
+        "project_id": get_env_var("GS_PROJECT_ID"),
+        "private_key_id": get_env_var("GS_PRIVATE_KEY_ID"),
+        "private_key": get_env_var("GS_PRIVATE_KEY").replace("\\n", "\n"),
+        "client_email": get_env_var("GS_CLIENT_EMAIL"),
+        "client_id": get_env_var("GS_CLIENT_ID"),
+        "auth_uri": get_env_var("GS_AUTH_URI"),
+        "token_uri": get_env_var("GS_TOKEN_URI"),
+        "auth_provider_x509_cert_url": get_env_var("GS_AUTH_PROVIDER_CERT_URL"),
+        "client_x509_cert_url": get_env_var("GS_CLIENT_CERT_URL"),
+        "universe_domain": get_env_var("GS_UNIVERSE_DOMAIN"),
     }
+    scope = ["https://spreadsheets.google.com/feeds","https://www.googleapis.com/auth/drive"]
+    creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, scope)
+    return gspread.authorize(creds)
 
-    creds = ServiceAccountCredentials.from_json_keyfile_dict(
-        creds_dict,
-        scopes=["https://www.googleapis.com/auth/spreadsheets"]
-    )
-    client = gspread.authorize(creds)
-    sheet = client.open_by_url(os.environ["GS_SHEET_URL"]).sheet1
-    return sheet
-
-sheet = init_gsheet()
-
-# ---- Generate token ----
-@app.get("/generate")
-def generate_token():
-    token = secrets.token_urlsafe(8)
-    expiry = int(time.time()) + TOKEN_EXPIRY
-    tokens[token] = expiry
-    return {"token": token, "expires_in": TOKEN_EXPIRY}
-
-# ---- Validate token and log presence ----
-class ScanResult(BaseModel):
-    student_id: str
+# ----------------------------
+# Routes
+# ----------------------------
+@app.get("/")
+def home():
+    return {"message": "Secure Attendance API is running"}
 
 @app.get("/validate/{token}")
-def validate_token(token: str, student_id: str):
-    now = int(time.time())
-    expiry = tokens.get(token)
-    if not expiry:
-        return {"status": "invalid"}
-    if now > expiry:
-        return {"status": "expired"}
+def validate(token: str):
+    # Replace with your token logic
+    if token == "valid-token":
+        return {"status": "success", "token": token}
+    raise HTTPException(status_code=401, detail="Invalid token")
 
-    # Log to Google Sheets
-    timestamp = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(now))
-    sheet.append_row([student_id, timestamp, token])
-    
-    return {"status": "valid", "logged_at": timestamp}
+@app.get("/test-sheet")
+def test_sheet():
+    try:
+        client = get_gsheet_client()
+        SPREADSHEET_ID = get_env_var("SPREADSHEET_ID")
+        sheet = client.open_by_key(SPREADSHEET_ID).sheet1
+        return {"title": sheet.title, "rows": sheet.get_all_records()}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
