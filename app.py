@@ -1,5 +1,7 @@
+import os
 import secrets
 import time
+import datetime
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 import gspread
@@ -19,12 +21,25 @@ app.add_middleware(
 )
 
 # ----------------------
-# Google Sheets setup
+# Google Sheets setup (from ENV)
 # ----------------------
 SCOPE = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
 
-# Make sure you upload service_account.json to Railway
-creds = ServiceAccountCredentials.from_json_keyfile_name("service_account.json", SCOPE)
+creds_dict = {
+    "type": os.getenv("GS_TYPE"),
+    "project_id": os.getenv("GS_PROJECT_ID"),
+    "private_key_id": os.getenv("GS_PRIVATE_KEY_ID"),
+    "private_key": os.getenv("GS_PRIVATE_KEY").replace("\\n", "\n"),
+    "client_email": os.getenv("GS_CLIENT_EMAIL"),
+    "client_id": os.getenv("GS_CLIENT_ID"),
+    "auth_uri": os.getenv("GS_AUTH_URI"),
+    "token_uri": os.getenv("GS_TOKEN_URI"),
+    "auth_provider_x509_cert_url": os.getenv("GS_AUTH_PROVIDER_CERT_URL"),
+    "client_x509_cert_url": os.getenv("GS_CLIENT_CERT_URL"),
+    "universe_domain": os.getenv("GS_UNIVERSE_DOMAIN"),
+}
+
+creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, SCOPE)
 client = gspread.authorize(creds)
 
 # Open by spreadsheet ID
@@ -62,7 +77,7 @@ def validate_token(token: str, student_id: str = Query(...)):
     del tokens[token]
 
     # Append to Google Sheet
-    timestamp = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime())
-    sheet.append_row([student_id, timestamp])
+    timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    sheet.append_row([student_id, timestamp, "Present"])
 
     return {"status": "success", "message": f"Attendance recorded for {student_id}"}
