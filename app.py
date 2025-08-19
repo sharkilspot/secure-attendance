@@ -27,7 +27,7 @@ app.add_middleware(
 
 # ----- Simple in-memory token store -----
 TOKENS: Dict[str, float] = {}  # token -> expires_at (epoch seconds)
-TOKEN_TTL_SECONDS = int(os.getenv("TOKEN_TTL_SECONDS", "30"))  # e.g., 30s
+TOKEN_TTL_SECONDS = int(os.getenv("TOKEN_TTL_SECONDS", "5"))  # e.g., 30s
 
 def _now() -> float:
     return time.time()
@@ -112,3 +112,4 @@ def test_sheet():
         return {"title": sheet.title, "rows": sheet.get_all_records()}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
