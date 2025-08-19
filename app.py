@@ -2,7 +2,7 @@
 import os
 import time
 import secrets
-from typing import Dict
+from typing import Dict, List
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -12,31 +12,48 @@ from oauth2client.service_account import ServiceAccountCredentials
 
 app = FastAPI(title="Secure Attendance API")
 
-# ----- CORS (allow Vue SFC Playground + your own origins) -----
+# ----------------------------
+# CORS (IMPORTANT)
+# ----------------------------
+# Starlette does NOT support wildcards like "https://*.vuejs.org" in allow_origins.
+# Use allow_origin_regex for subdomains, and explicit origins for others.
+def _env_list(name: str) -> List[str]:
+    val = os.getenv(name, "").strip()
+    return [x.strip() for x in val.split(",") if x.strip()] if val else []
+
+EXTRA_ORIGINS = _env_list("FRONTEND_ORIGINS")  # optional, comma-separated
+# Known good origins: SFC Playground + Play
+DEFAULT_EXPLICIT_ORIGINS = [
+    "https://sfc.vuejs.org",
+    "https://play.vuejs.org",
+]
+
+# Build final explicit origins (filter empties to avoid 'null' origin checks).
+ALLOW_ORIGINS = [*DEFAULT_EXPLICIT_ORIGINS, *EXTRA_ORIGINS]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "https://sfc.vuejs.org",
-        "https://*.vuejs.org",    # optional
-        os.getenv("FRONTEND_ORIGIN", ""),  # e.g. your deployed site
-    ],
-    allow_credentials=True,
+    allow_origins=ALLOW_ORIGINS,                 # explicit list
+    allow_origin_regex=r"^https://([a-z0-9-]+\.)*vuejs\.org$",  # any subdomain of vuejs.org
     allow_methods=["*"],
     allow_headers=["*"],
+    allow_credentials=False,  # you aren't using cookies; keep this False for simpler CORS
 )
 
-# ----- Simple in-memory token store -----
+# ----------------------------
+# Token store (in-memory)
+# ----------------------------
 TOKENS: Dict[str, float] = {}  # token -> expires_at (epoch seconds)
-TOKEN_TTL_SECONDS = int(os.getenv("TOKEN_TTL_SECONDS", "5"))  # e.g., 30s
+TOKEN_TTL_SECONDS = int(os.getenv("TOKEN_TTL_SECONDS", "5"))
 
 def _now() -> float:
     return time.time()
 
 def _clean_expired():
     now = _now()
-    expired = [t for t, exp in TOKENS.items() if exp < now]
-    for t in expired:
-        TOKENS.pop(t, None)
+    for t, exp in list(TOKENS.items()):
+        if exp < now:
+            TOKENS.pop(t, None)
 
 # ----------------------------
 # ENV helper
@@ -74,6 +91,10 @@ def get_gsheet_client():
 # ----------------------------
 # Routes
 # ----------------------------
+@app.get("/healthz")
+def healthz():
+    return {"ok": True, "ttl": TOKEN_TTL_SECONDS}
+
 @app.get("/")
 def home():
     return {"message": "Secure Attendance API is running"}
@@ -81,8 +102,7 @@ def home():
 @app.get("/generate")
 def generate():
     """
-    Issue a short-lived token for QR. Frontend embeds it in a URL
-    like /validate/{token}.
+    Issue a short-lived token for QR. Frontend embeds it in /validate/{token}.
     """
     _clean_expired()
     token = secrets.token_urlsafe(24)
@@ -112,4 +132,3 @@ def test_sheet():
         return {"title": sheet.title, "rows": sheet.get_all_records()}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
-
