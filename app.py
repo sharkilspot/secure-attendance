@@ -1,10 +1,24 @@
 # app.py
 from fastapi import FastAPI, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
 import os
+import secrets
+import time
 import gspread
 from oauth2client.service_account import ServiceAccountCredentials
 
 app = FastAPI(title="Secure Attendance API")
+
+# ----------------------------
+# CORS middleware
+# ----------------------------
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # allow all origins for simplicity
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 # ----------------------------
 # ENV helper
@@ -32,9 +46,15 @@ def get_gsheet_client():
         "client_x509_cert_url": get_env_var("GS_CLIENT_CERT_URL"),
         "universe_domain": get_env_var("GS_UNIVERSE_DOMAIN"),
     }
-    scope = ["https://spreadsheets.google.com/feeds","https://www.googleapis.com/auth/drive"]
+    scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
     creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, scope)
     return gspread.authorize(creds)
+
+# ----------------------------
+# In-memory token store
+# ----------------------------
+# Structure: {token_string: expiration_timestamp}
+token_store = {}
 
 # ----------------------------
 # Routes
@@ -43,12 +63,23 @@ def get_gsheet_client():
 def home():
     return {"message": "Secure Attendance API is running"}
 
+@app.get("/generate")
+def generate_token():
+    token = secrets.token_urlsafe(8)
+    expires_in = 30  # token valid for 30 seconds
+    expiration = time.time() + expires_in
+    token_store[token] = expiration
+    return {"token": token, "expires_in": expires_in}
+
 @app.get("/validate/{token}")
 def validate(token: str):
-    # Replace with your token logic
-    if token == "valid-token":
+    now = time.time()
+    exp = token_store.get(token)
+    if exp and now < exp:
+        # token is valid; optionally remove it if single-use
+        del token_store[token]
         return {"status": "success", "token": token}
-    raise HTTPException(status_code=401, detail="Invalid token")
+    raise HTTPException(status_code=401, detail="Invalid or expired token")
 
 @app.get("/test-sheet")
 def test_sheet():
